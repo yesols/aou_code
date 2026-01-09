@@ -1,0 +1,82 @@
+import os
+import pandas as pd
+from google.cloud import bigquery
+my_bucket = os.getenv('WORKSPACE_BUCKET')
+cdr = os.getenv('WORKSPACE_CDR')
+
+charlson_conditions = {
+    'MI': (1, '4329847'),
+    'CHF': (1, '314378, 439696, 316139'),
+    'PVD': (1, '321052'),
+    'CVD': (1, '381591'),
+    'dementia': (1, '4182210'),
+    'CPD': (1, '259044, 444084, 4197819, 4049971, 314971, 4057432, 4169883, 255841, 255573, 37116845, 256449'),
+    'tissue': (1, '253549'),
+    'ulcer': (1, '4027663'),
+    'liver': (1, '194984'),
+    'DM': (1, '201820'),
+    'hemiplegia': (2, '374022'),
+    'renal': (2, '443919, 46270347, 4056462, 4059584, 4055899, 4056480, 4298809, 46271022, 192359, 4030518, 4019967, 42539502'),
+    'DM_compl': (2, '442793'),
+    'malig': (2, '443392'),
+    'liver2': (3, '24966, 4245975, 192680'),
+    'met': (6, '432851'),
+    'AIDS': (6, '4267414')
+}
+
+# Function to generate Charlson query
+def generate_charlson_sql(table_id='cohort'):
+    blocks = []
+    # Loop through the global charlson_conditions dictionary
+    for cond, (score, ids_str) in charlson_conditions.items():
+        block = f'''
+        SELECT
+            co.person_id,
+            '{cond}' AS condition,
+            {score} AS weight
+        FROM {cdr}.condition_occurrence co
+        JOIN {cdr}.concept_ancestor ca
+            ON ca.descendant_concept_id = co.condition_concept_id
+        JOIN {table_id} c
+            ON c.person_id = co.person_id
+        WHERE ca.ancestor_concept_id IN ({ids_str})
+        '''
+        blocks.append(block)
+
+    union_all = "\nUNION ALL\n".join(blocks)
+
+    final_sql = f'''
+    WITH charlson_flags AS (
+        {union_all}
+    )
+    SELECT
+        f.person_id,
+        SUM(f.weight) AS charlson_score
+    FROM (
+        -- Distinct ensures we don't double count the same condition 
+        -- just because they have multiple visits for it
+        SELECT DISTINCT person_id, condition, weight
+        FROM charlson_flags
+    ) f
+    GROUP BY f.person_id
+    '''
+    return final_sql
+
+# Function to compute CCI on participants based on external table
+def get_charlson_score_df(csv_filename, table_id="cohort"):
+    client = bigquery.Client()
+    # Configure the external table (CSV in Bucket)
+    external_config = bigquery.ExternalConfig("CSV")
+    external_config.source_uris = [f'{my_bucket}/data/{csv_filename}']
+    external_config.schema = [
+        bigquery.SchemaField('person_id', 'INT64'),
+    ]
+    external_config.options.skip_leading_rows = 1
+    job_config = bigquery.QueryJobConfig(table_definitions={table_id: external_config})
+    # Generate and Run Query
+    query = generate_charlson_sql(table_id)
+    query_job = client.query(query, job_config=job_config)
+    return query_job.to_dataframe()
+
+df = get_charlson_score_df('ids.csv')
+
