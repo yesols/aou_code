@@ -1,0 +1,57 @@
+# Read file
+# ruca <- read.xlsx("file_name.xlsx", 2)
+
+ruca <- ruca %>% select(ZIP_CODE, STATE, RUCA1) %>% rename(zip = ZIP_CODE, state = STATE, ruca = RUCA1)
+
+aou_data <- read_csv("zip_ses.csv") # AoU dataset with person_id and zip_code (ZIP-3)
+
+# Modify RUCA dataframe with 3 digit code
+ruca$zip_3 <- str_sub(ruca$zip, start = 1, end = 3)
+# Modify aou_data zip info
+data <- aou_data %>% mutate(zip_3 = str_sub(zip_code, start = 1, end = 3))
+
+# Group by ZIP-3 and look at the aggregate properties
+ruca_grouped <- ruca %>% filter(ruca != 99) %>%
+  group_by(zip_3) %>%
+  summarise(count = n()),
+    mean = mean(ruca),
+    median = median(ruca),
+    sd = sd(ruca)) %>%
+  arrange(desc(mean))
+
+# Rural/urban category:
+# 1-6: urban
+# 7-10: rural
+# Neither: mixed
+for (i in 1:nrow(ruca_grouped)){
+  zip3_i <- ruca_grouped$zip_3[i]
+  df <- ruca %>% filter(zip_3 == zip3_i & ruca != 99)
+  if (min(df$ruca) >= 7){
+    ruca_grouped$category[i] <- "rural"
+  } else if (max(df$ruca) <= 6){
+    ruca_grouped$category[i] <- "urban"
+  } else {
+    ruca_grouped$category[i] <- "mixed"
+  }
+}
+
+# Join categorized ruca table with AoU dataframe
+category <- ruca_grouped %>% select(zip_3, category)
+data <- left_join(data, category)
+
+
+
+# Broader "rural" definition
+for (i in 1:nrow(ruca_grouped)){
+    zip3_i <- ruca_grouped$zip_3[i]
+    df <- ruca %>% filter(zip_3 == zip3_i & ruca != 99)
+    if (min(df$ruca) >= 4){
+        ruca_grouped$category2[i] <- "rural"
+    } else if (max(df$ruca) <= 3){
+        ruca_grouped$category2[i] <- "urban"
+    } else {
+        ruca_grouped$category2[i] <- "mixed"
+    }
+}
+category2 <- ruca_grouped %>% select(zip_3, category2)
+data <- left_join(data, category2)
